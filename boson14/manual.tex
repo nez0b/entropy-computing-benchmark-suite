@@ -1,0 +1,485 @@
+% !TEX program = pdflatex
+% Boson14 Planted-Clique Benchmark Suite — Presentation Manual
+% Compile: pdflatex manual.tex (run twice for correct references)
+
+\documentclass[aspectratio=169]{beamer}
+\usetheme{metropolis}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{hyperref}
+
+% Listings style for code blocks
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    backgroundcolor=\color{black!5},
+    frame=single,
+    framerule=0pt,
+    breaklines=true,
+    breakatwhitespace=true,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false,
+    keywordstyle=\color{blue!70!black},
+    commentstyle=\color{green!50!black},
+    stringstyle=\color{orange!80!black},
+    language=Python,
+}
+
+\lstdefinestyle{shell}{
+    language=bash,
+    keywordstyle=\color{blue!70!black},
+    morekeywords={python,uv,pip,cd,export},
+}
+
+% Metadata
+\title{Boson14 Planted-Clique Benchmark Suite}
+\subtitle{Scaled Motzkin-Straus Calibration for Dirac-3}
+\author{QCi Hardware Team}
+\date{\today}
+\institute{Quantum Computing Inc.}
+
+\begin{document}
+
+% ── Title ─────────────────────────────────────────────────────────────────
+
+\maketitle
+
+% ── Why Planted Cliques? ─────────────────────────────────────────────────
+
+\begin{frame}{Why Planted Cliques?}
+    \begin{itemize}
+        \item \textbf{Known $\omega$} — ground truth is planted, not discovered
+        \item \textbf{Controllable difficulty} — adjust $n$, $k$, edge probability $p$
+        \item \textbf{Integer coupling} — $J = -A$ has entries in $\{0, -1\}$, no half-integer scaling
+        \item \textbf{Degenerate landscapes} — plant multiple same-size cliques to test multi-modal behaviour
+        \item \textbf{Blind testing} — scramble vertex labels; solver sees no hint of planted structure
+    \end{itemize}
+
+    \vspace{1em}
+    \alert{Key insight:} If hardware recovers the planted $\omega$ across different $R$ values and permutations, calibration is verified end-to-end.
+\end{frame}
+
+% ── Motzkin-Straus Theorem ───────────────────────────────────────────────
+
+\begin{frame}{Motzkin-Straus Theorem}
+    The clique number can be found via a continuous optimisation:
+
+    \begin{theorem}[Motzkin \& Straus, 1965]
+        \[
+            \max_{x \in \Delta_n} \frac{1}{2} x^\top A x = \frac{1}{2}\left(1 - \frac{1}{\omega}\right)
+        \]
+        where $A$ is the adjacency matrix and $\Delta_n = \{x \geq 0 : \sum x_i = 1\}$ is the standard simplex.
+    \end{theorem}
+
+    \vspace{0.5em}
+    \textbf{Inverting:} Given optimal objective $f^*$:
+    \[
+        \omega = \operatorname{round}\!\left(\frac{1}{1 - 2f^*}\right)
+    \]
+\end{frame}
+
+% ── Scaled Formulation ───────────────────────────────────────────────────
+
+\begin{frame}{Scaled Simplex Formulation}
+    Scale to integer-friendly constraints: $y = R\,x$, so $\sum y_i = R$.
+
+    \begin{align*}
+        g(y) &= \tfrac{1}{2}\, y^\top A\, y = R^2 \cdot f(x) \\[6pt]
+        g^*(\omega) &= \frac{R^2}{2}\Bigl(1 - \frac{1}{\omega}\Bigr) \\[6pt]
+        \omega &= \operatorname{round}\!\Bigl(\frac{R^2}{R^2 - 2\,g^*}\Bigr)
+    \end{align*}
+
+    \vspace{0.5em}
+    \begin{itemize}
+        \item Optimal allocation: $y_i = R/\omega$ for clique vertices, $0$ otherwise
+        \item Coupling matrix: $J = -A$ (entries in $\{0, -1\}$, all integers)
+    \end{itemize}
+\end{frame}
+
+% ── Hardware Energy Mapping ──────────────────────────────────────────────
+
+\begin{frame}{Hardware Energy Mapping}
+    Dirac-3 \textbf{minimises} $E(y) = y^\top J\, y$ on the scaled simplex $\sum y_i = R$.
+
+    \begin{align*}
+        E(y) &= y^\top J\, y = -y^\top A\, y = -2\,g(y) \\[6pt]
+        E^* &= -R^2\Bigl(1 - \frac{1}{\omega}\Bigr) \\[6pt]
+        \omega &= \operatorname{round}\!\Bigl(\frac{R^2}{R^2 + E^*}\Bigr)
+    \end{align*}
+
+    \vspace{0.5em}
+    \begin{itemize}
+        \item Both $g \to \omega$ and $E \to \omega$ inversions should agree on every sample
+        \item Consistency check: count agreement rate across all Dirac-3 samples
+    \end{itemize}
+\end{frame}
+
+% ── Toolkit File Structure ───────────────────────────────────────────────
+
+\begin{frame}[fragile]{Toolkit File Structure}
+\begin{lstlisting}[style=shell,numbers=none]
+boson14/
+  generate.py               # Instance generation (planted, degenerate, scramble)
+  test_dirac.py             # Dirac-3 submission + verification
+  scaled-motzkin-straus.md  # Mathematical derivation
+  USAGE.md                  # Full CLI reference
+  manual.pdf                # This presentation
+  inputs/                   # External CSV files (e.g. DIMACS graphs)
+    C125.9.csv              # 125-vertex dense graph (omega=34)
+  output/                   # Results directory
+    *_meta.json             # Instance metadata
+    *_boson14.csv           # StQP adjacency CSV (n x n+1)
+    *_dirac_meta.json       # Solver results
+    *_solutions.npz         # Theoretical solutions
+    *_dirac_solutions.npz   # Hardware samples
+    *.png                   # Plots
+\end{lstlisting}
+
+    \vspace{0.5em}
+    \textbf{Library:} Core functions live in \texttt{dirac\_bench.boson14} (the \texttt{dirac-test-suite} package).
+\end{frame}
+
+% ── generate.py Demo ─────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{generate.py --- Generating Instances}
+\begin{lstlisting}[style=shell,numbers=none]
+uv run python boson14/generate.py --n 30 --k 12 --verify
+\end{lstlisting}
+
+\begin{lstlisting}[numbers=none,basicstyle=\ttfamily\scriptsize]
+Generating: n=30, k=12, p=0.5, seed=42, R=100
+  Planted nodes: [2, 3, 6, 10, 14, 16, 19, 21, 23, 28, 29, 30]
+
+Theoretical values (R=100, w=12):
+  g* = 4583.33
+  E* = -9166.67
+  y_i = R/w = 100/12 = 8.3333 for planted vertices
+
+Integer QP: J has entries in {-1, 0}
+
+Brute-force verification:
+  Clique number (brute-force): w = 12
+  CONFIRMED: w = k = 12
+\end{lstlisting}
+
+    Variants:
+\begin{lstlisting}[style=shell,numbers=none]
+# Dense edges, custom seed
+generate.py --n 30 --k 12 --density dense --seed 99
+# With distribution plots
+generate.py --n 40 --k 15 --plot-distribution --verify
+\end{lstlisting}
+\end{frame}
+
+% ── Degenerate Cliques ───────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Degenerate Cliques}
+    Plant multiple same-size cliques to create a \textbf{degenerate} optimisation landscape:
+
+    \begin{itemize}
+        \item All planted cliques have size $k$ --- same $\omega$, multiple optima
+        \item Cross-edges between planted sets are \textbf{severed} to guarantee independence
+        \item Tests whether hardware explores multiple basins or collapses to one
+    \end{itemize}
+
+    \vspace{0.5em}
+\begin{lstlisting}[style=shell,numbers=none]
+uv run python boson14/generate.py --n 50 --k 10 --num-cliques 3 --verify
+\end{lstlisting}
+
+\begin{lstlisting}[numbers=none,basicstyle=\ttfamily\scriptsize]
+  Degenerate: 3 planted 10-cliques
+  Set 1: [6, 18, 21, 26, 28, 40, 46, 47, 48, 50]
+  Set 2: [5, 8, 19, 24, 25, 30, 32, 38, 39, 41]
+  Set 3: [10, 16, 17, 22, 27, 29, 33, 35, 42, 43]
+  omega_verified: 10, num_max_cliques: 3
+\end{lstlisting}
+\end{frame}
+
+% ── Index Scrambling ─────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Index Scrambling}
+    Apply a random vertex permutation for blind testing:
+
+    \begin{itemize}
+        \item \textbf{Forward permutation:} original label $\to$ scrambled label
+        \item \textbf{Inverse permutation:} scrambled label $\to$ original label (stored in metadata)
+        \item \texttt{unscramble\_solution()} maps Dirac-3 y-vectors back to original ordering
+        \item Objectives are invariant: $g(y_{\text{scrambled}}) = g(y_{\text{original}})$
+    \end{itemize}
+
+    \vspace{0.5em}
+\begin{lstlisting}[style=shell,numbers=none]
+# Generate scrambled
+uv run python boson14/generate.py --n 50 --k 15 --num-cliques 3 --scramble
+# Test scramble roundtrip on Dirac-3
+uv run python boson14/test_dirac.py --n 14 --k 7 --scramble --verify --plot
+\end{lstlisting}
+
+\begin{lstlisting}[numbers=none,basicstyle=\ttfamily\scriptsize]
+--- Scramble Roundtrip ---
+  Sample 0: g(scrambled)=4285.65, sum(y_orig)=100.00
+  Scramble roundtrip: objectives preserved through permutation
+\end{lstlisting}
+\end{frame}
+
+% ── test_dirac.py Demo ───────────────────────────────────────────────────
+
+\begin{frame}[fragile]{test\_dirac.py --- Dirac-3 Submission}
+    Three input modes: inline parameters, JSON from \texttt{generate.py}, or CSV file:
+\begin{lstlisting}[style=shell,numbers=none]
+# Inline planted-clique parameters
+uv run python boson14/test_dirac.py --n 14 --k 7 --verify --plot
+# From generate.py JSON
+uv run python boson14/test_dirac.py --from-json .../boson14.json --verify
+# From CSV (planted or external graph)
+uv run python boson14/test_dirac.py --csv .../boson14.csv --k 7 --verify
+\end{lstlisting}
+
+\begin{lstlisting}[numbers=none,basicstyle=\ttfamily\scriptsize]
+============================================================
+Boson14 Dirac-3 Test: n=14, k=7, p=0.5, seed=42, R=100
+============================================================
+Planted nodes: [3, 5, 6, 7, 8, 12, 13]
+
+Theoretical values (R=100, w=7):
+  g* = 4285.71,  E* = -8571.43,  y_i = 14.2857
+
+--- Dirac-3 Submission (R=100) ---
+  Submitting 14-variable scaled QP to Dirac-3 cloud
+  Best g = 4285.65  =>  omega = 7  (119.5s)
+
+============================================================
+SUMMARY: Best omega = 7, Known omega = 7  =>  MATCH
+============================================================
+\end{lstlisting}
+\end{frame}
+
+% ── CSV Input Path ──────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{CSV Input Path}
+    Load any graph from a CSV adjacency file --- no planted-clique generation required.
+
+    \vspace{0.3em}
+    \textbf{CSV format:} $n$ rows $\times$ $(n{+}1)$ columns. Column~0 = linear coefficients $C_i$ (all zeros for Motzkin-Straus), columns 1\ldots$n$ = symmetric adjacency $A$.
+
+    \vspace{0.5em}
+    \textbf{With known $k$} (planted-clique CSV from \texttt{generate.py}):
+\begin{lstlisting}[style=shell,numbers=none]
+uv run python boson14/test_dirac.py \
+  --csv boson14/output/n14_k7_p0.5_s42/n14_k7_p0.5_s42_boson14.csv \
+  --k 7 --verify --plot
+\end{lstlisting}
+
+    \textbf{External graph, unknown $k$} (e.g.\ DIMACS):
+\begin{lstlisting}[style=shell,numbers=none]
+uv run python boson14/test_dirac.py \
+  --csv boson14/inputs/C125.9.csv --verify
+\end{lstlisting}
+
+    \vspace{0.3em}
+    \begin{itemize}
+        \item CSV$\to$JSON round-trip is verified automatically (adjacency survives conversion)
+        \item Omit \texttt{--k} for unknown instances --- brute-force still reports true $\omega$
+        \item Output saved to \texttt{boson14/output/\{csv\_stem\}/}
+    \end{itemize}
+\end{frame}
+
+% ── CSV Sample Output ───────────────────────────────────────────────────
+
+\begin{frame}[fragile]{CSV Input --- Sample Output}
+\begin{lstlisting}[numbers=none,basicstyle=\ttfamily\scriptsize]
+Loaded CSV: .../n14_k7_p0.5_s42_boson14.csv (n=14)
+  CSV->JSON round-trip: PASS
+
+============================================================
+Boson14 Dirac-3 Test: n=14, k=7, R=100  (from CSV)
+============================================================
+
+Theoretical values (R=100, w=7):
+  g* = 4285.71,  E* = -8571.43,  y_i = 14.2857
+
+Brute-force verification:
+  Clique number (brute-force): w = 7
+  CONFIRMED: w = k = 7
+
+--- Dirac-3 Submission (R=100) ---
+  Best g = 4285.65  =>  omega = 7  (161.4s)
+
+Conversion consistency:
+  omega_from_g == omega_from_E: 100/100 samples agree
+
+============================================================
+SUMMARY: Best omega = 7, Known omega = 7  =>  MATCH
+============================================================
+\end{lstlisting}
+\end{frame}
+
+% ── Multi-R Sweep ────────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Multi-R Sweep}
+    Verify that omega recovery is consistent across different $R$ values:
+
+\begin{lstlisting}[style=shell,numbers=none]
+uv run python boson14/test_dirac.py --n 14 --k 7 --multi-R --verify
+\end{lstlisting}
+
+\begin{lstlisting}[numbers=none,basicstyle=\ttfamily\scriptsize]
+--- Multi-R Sweep ---
+
+      R |         g* |         E* |     best_g | best_omega
+  -----+-----------+-----------+-----------+-----------
+      1 |     0.4286 |    -0.8571 |     0.4286 |          7
+     10 |    42.8571 |   -85.7143 |    42.8571 |          7
+    100 |  4285.7143 | -8571.4286 |  4285.6501 |          7
+
+  PASS: All R values recover omega = 7
+\end{lstlisting}
+
+    \vspace{0.5em}
+    \begin{itemize}
+        \item Tests $R \in \{1, 10, 100\}$ on the same graph instance
+        \item All three must agree on $\omega$ for the test to PASS
+        \item Validates that energy scaling does not affect clique recovery
+    \end{itemize}
+\end{frame}
+
+% ── Generating Plots ─────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Generating Distribution Plots}
+    Two plot types are available:
+
+    \vspace{0.3em}
+    \begin{description}
+        \item[Clique distribution] (\texttt{clique\_dist\_*.png}) — two-panel figure:
+            top panel shows maximal clique counts by size,
+            bottom panel shows the scaled objective $g^*$ for each maximal clique with
+            vertical $\omega$ lines.
+        \item[Scaled histogram] (\texttt{scaled\_histogram\_*.png}) — histogram of
+            Dirac-3 sample objectives with theoretical $g^*(\omega)$ reference lines.
+    \end{description}
+
+    \vspace{0.3em}
+    \textbf{From generate.py} (local brute-force, no hardware needed):
+\begin{lstlisting}[style=shell,numbers=none]
+uv run python boson14/generate.py --n 14 --k 7 --plot-distribution --verify
+\end{lstlisting}
+
+    \textbf{From test\_dirac.py} (both plot types, after Dirac-3 submission):
+\begin{lstlisting}[style=shell,numbers=none]
+uv run python boson14/test_dirac.py --n 14 --k 7 --verify --plot
+\end{lstlisting}
+
+    Plots are saved to \texttt{--output-dir} (default: \texttt{boson14/output/}).
+\end{frame}
+
+% ── Example Plot ─────────────────────────────────────────────────────────
+
+\begin{frame}{Example: Clique Distribution ($n{=}14$, $k{=}7$)}
+    \centering
+    \includegraphics[width=0.78\textwidth]{output/n14_k7_p0.5_s42/clique_dist_n14_k7_p0.5_s42.png}
+
+    \vspace{0.3em}
+    {\small\texttt{generate.py --n 14 --k 7 --plot-distribution --verify}}
+\end{frame}
+
+% ── Scaled Histogram ─────────────────────────────────────────────────────
+
+\begin{frame}{Scaled Histogram --- What It Shows}
+    The histogram plots the distribution of $g(y) = \tfrac{1}{2}y^\top A y$ across all Dirac-3 samples:
+
+    \vspace{0.5em}
+    \begin{itemize}
+        \item \textbf{Vertical lines} mark theoretical $g^*(\omega)$ for integer $\omega$ values
+        \item \textbf{Green line:} known $\omega$ (planted clique size)
+        \item \textbf{Red line:} best objective achieved by hardware
+        \item \textbf{Histogram shape:} indicates consistency of hardware output
+    \end{itemize}
+
+    \vspace{0.5em}
+    \alert{Tight clustering near the planted $\omega$ line = well-calibrated hardware.}
+
+    \vspace{0.3em}
+    \begin{displaymath}
+        g^*(\omega) = \frac{R^2}{2}\Bigl(1 - \frac{1}{\omega}\Bigr)
+    \end{displaymath}
+\end{frame}
+
+% ── Interpreting Results ─────────────────────────────────────────────────
+
+\begin{frame}{Interpreting Results}
+    \textbf{What histograms tell you about hardware quality:}
+
+    \vspace{0.5em}
+    \begin{description}
+        \item[Peak at planted $\omega$:] Hardware finds optimal solutions consistently.
+        \item[Peak 1--2 below planted $\omega$:] Good performance, slight calibration drift.
+        \item[Wide spread:] Hardware output is noisy; may need parameter tuning.
+        \item[Bimodal distribution:] Hardware may be finding multiple local optima (expected for degenerate instances).
+    \end{description}
+
+    \vspace{0.5em}
+    \textbf{Tuning knobs:}
+    \begin{itemize}
+        \item \texttt{relaxation\_schedule}: 1--4, controls annealing behaviour
+        \item \texttt{num\_samples}: More samples $\to$ better statistics
+        \item \texttt{R}: Larger $R$ $\to$ larger energy gap between clique sizes
+    \end{itemize}
+\end{frame}
+
+% ── Output Formats ───────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Output Formats}
+    \begin{tabular}{@{}lll@{}}
+        \toprule
+        \textbf{Suffix} & \textbf{Source} & \textbf{Contents} \\
+        \midrule
+        \texttt{\_meta.json}           & generate.py   & Graph params, planted sets, $g^*$, $E^*$ \\
+        \texttt{\_dirac\_meta.json}    & test\_dirac.py & Solver params, best $\omega$, solve time \\
+        \texttt{\_solutions.npz}       & both          & Theoretical max-clique y-vectors \\
+        \texttt{\_dirac\_solutions.npz}& test\_dirac.py & Dirac-3 sample y-vectors \\
+        \texttt{clique\_dist\_*.png}   & both          & Clique size distribution bar chart \\
+        \texttt{scaled\_histogram\_*.png} & test\_dirac.py & Objective histogram \\
+        \bottomrule
+    \end{tabular}
+
+    \vspace{0.8em}
+    Loading solutions in Python:
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize]
+import numpy as np
+data = np.load("boson14/output/n14_k7_p0.5_s42_dirac_solutions.npz")
+y_vectors = data["y_vectors"]  # shape (num_samples, n)
+\end{lstlisting}
+\end{frame}
+
+% ── Worked Example ───────────────────────────────────────────────────────
+
+\begin{frame}{Worked Example ($R=100$, $\omega=7$)}
+    \centering
+    \begin{tabular}{@{}lcr@{}}
+        \toprule
+        \textbf{Quantity} & \textbf{Formula} & \textbf{Value} \\
+        \midrule
+        $f^*$              & $\frac{1}{2}(1 - 1/7)$                    & $0.4286$ \\[4pt]
+        $g^*$              & $\frac{100^2}{2}(1 - 1/7)$               & $4285.71$ \\[4pt]
+        $E^*$              & $-100^2(1 - 1/7)$                        & $-8571.43$ \\[4pt]
+        $y_i$ (clique)     & $100/7$                                   & $14.2857$ \\[4pt]
+        $y_i$ (non-clique) & $0$                                       & $0$ \\
+        \bottomrule
+    \end{tabular}
+
+    \vspace{1em}
+    \raggedright
+    \textbf{Verification:}
+    \begin{itemize}
+        \item $\omega = \operatorname{round}(10000 / (10000 - 8571.43)) = \operatorname{round}(7) = 7$ \checkmark
+        \item $\omega = \operatorname{round}(10000 / (10000 + (-8571.43))) = \operatorname{round}(7) = 7$ \checkmark
+        \item $\sum y_i = 7 \times 14.2857 = 100 = R$ \checkmark
+    \end{itemize}
+\end{frame}
+
+\end{document}

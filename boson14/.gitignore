@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+output/
+.DS_Store
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.vrb

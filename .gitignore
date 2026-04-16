@@ -7,6 +7,24 @@ plots/
 .env
 *.pyc
 .pytest_cache/
+.ruff_cache/
 dist/
 build/
 .DS_Store
+
+# LaTeX aux files
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.vrb
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Editor/OS
+*.swp
+.idea/
+.vscode/
