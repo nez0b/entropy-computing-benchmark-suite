@@ -268,6 +268,54 @@ def scramble_graph(
     return G_scrambled, forward_perm, inverse_perm
 
 
+def create_targeted_permutation(
+    planted_nodes: list[int],
+    n: int,
+    target_positions: list[int],
+    remaining_seed: int | None = None,
+) -> tuple[dict[int, int], dict[int, int]]:
+    """Build a bijective permutation mapping planted nodes to target positions.
+
+    Args:
+        planted_nodes: 1-based vertices of the planted clique.
+        n: Total number of vertices (graph has nodes 1..n).
+        target_positions: 1-based target positions for the planted clique.
+        remaining_seed: If set, randomly shuffle non-planted vertex mapping.
+
+    Returns:
+        (forward_perm, inverse_perm) where
+        forward_perm[old_1based] = new_1based.
+    """
+    if len(planted_nodes) != len(target_positions):
+        raise ValueError(
+            f"len(planted_nodes)={len(planted_nodes)} != "
+            f"len(target_positions)={len(target_positions)}"
+        )
+    if len(set(target_positions)) != len(target_positions):
+        raise ValueError("target_positions must not contain duplicates")
+    if not all(1 <= t <= n for t in target_positions):
+        raise ValueError(f"All target_positions must be in [1, {n}]")
+
+    planted_set = set(planted_nodes)
+    target_set = set(target_positions)
+
+    non_planted = sorted(v for v in range(1, n + 1) if v not in planted_set)
+    remaining_positions = sorted(v for v in range(1, n + 1) if v not in target_set)
+
+    if remaining_seed is not None:
+        rng = np.random.default_rng(remaining_seed)
+        remaining_positions = [int(x) for x in rng.permutation(remaining_positions)]
+
+    forward_perm = {}
+    for old, new in zip(sorted(planted_nodes), sorted(target_positions)):
+        forward_perm[old] = new
+    for old, new in zip(non_planted, remaining_positions):
+        forward_perm[old] = new
+
+    inverse_perm = {v: k for k, v in forward_perm.items()}
+    return forward_perm, inverse_perm
+
+
 def unscramble_solution(
     y: np.ndarray,
     inverse_perm: dict[int, int],

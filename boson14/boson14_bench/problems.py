@@ -5,5 +5,6 @@ import numpy as np
 
 
 def motzkin_straus_adjacency(graph: nx.Graph) -> np.ndarray:
-    """Adjacency matrix A as float64 ndarray."""
-    return nx.adjacency_matrix(graph).toarray().astype(np.float64)
+    """Adjacency matrix A as float64 ndarray, rows/cols in sorted node order."""
+    nodelist = sorted(graph.nodes())
+    return nx.adjacency_matrix(graph, nodelist=nodelist).toarray().astype(np.float64)
