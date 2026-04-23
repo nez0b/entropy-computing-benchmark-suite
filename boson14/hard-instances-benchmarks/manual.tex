@@ -1,0 +1,439 @@
+% !TEX program = pdflatex
+% Hard-Instance Boson14 Hardware Stress-Test Pipeline --- Presentation Manual
+% Compile: pdflatex manual.tex (run twice for correct references)
+
+\documentclass[aspectratio=169]{beamer}
+\usetheme{metropolis}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{hyperref}
+
+% Listings style for code blocks
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    backgroundcolor=\color{black!5},
+    frame=single,
+    framerule=0pt,
+    breaklines=true,
+    breakatwhitespace=true,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false,
+    keywordstyle=\color{blue!70!black},
+    commentstyle=\color{green!50!black},
+    stringstyle=\color{orange!80!black},
+    language=Python,
+}
+
+\lstdefinestyle{shell}{
+    language=bash,
+    keywordstyle=\color{blue!70!black},
+    morekeywords={python,uv,pip,cd,export,mkdir},
+}
+
+\lstdefinestyle{json}{
+    language={},
+    keywordstyle=\color{blue!70!black},
+    stringstyle=\color{orange!80!black},
+    basicstyle=\ttfamily\scriptsize,
+}
+
+% Metadata
+\title{Hard-Instance Boson14 Stress-Test Pipeline}
+\subtitle{Brockington-style hard benchmarks for Boson14 hardware}
+\author{QCi Hardware Team}
+\date{\today}
+\institute{Quantum Computing Inc.}
+
+\begin{document}
+
+% ── Title ─────────────────────────────────────────────────────────────────
+
+\maketitle
+
+% ── Motivation ───────────────────────────────────────────────────────────
+
+\begin{frame}{Why a Separate Hard-Instance Pipeline?}
+    \begin{itemize}
+        \item Random planted cliques (\texttt{full-benchmark.py}) are \textbf{too easy}: $k \gg \sqrt{n}$ $\Rightarrow$ gradient descent finds $\omega$ reliably
+        \item To stress-test hardware we need instances that \textbf{defeat classical continuous solvers}: SLSQP, L-BFGS, PGD
+        \item Five construction strategies from the literature (Brockington-Culberson, Walteros-Buchanan, Gamarnik-Zadik, Bomze)
+        \item Same downstream tooling: 3 permutation variants per instance, one CSV per variant, Boson14 hardware via \texttt{run\_boson14.py}
+    \end{itemize}
+
+    \vspace{1em}
+    \alert{Goal:} Identify instances where hardware outperforms (or at least matches) multi-restart gradient methods.
+\end{frame}
+
+% ── The Five Strategies ─────────────────────────────────────────────────
+
+\begin{frame}{The Five Hard-Instance Strategies}
+    \begin{table}
+    \footnotesize
+    \begin{tabular}{l l l l}
+        \toprule
+        \textbf{Code} & \textbf{Name} & \textbf{Key Parameter} & \textbf{Hardness Signal} \\
+        \midrule
+        A & Near-threshold  & $k \approx k_{\text{mult}}\!\cdot\!\log_2 n$ & $k$ near detection threshold \\
+        B & Dense random    & $p \in [0.8,\,0.9]$                        & Exponentially many near-optimal cliques \\
+        C & Degenerate      & \#planted = $\{2,3,5\}$                    & Multiple competing basins \\
+        D & Camouflage      & \texttt{removal\_frac} $\in [0.3, 0.5]$     & Suppressed degree on clique vertices \\
+        E & Overlap         & $|S \cap T| = k{-}2$                       & Spurious solutions on $S \cup T$ \\
+        \bottomrule
+    \end{tabular}
+    \end{table}
+
+    \vspace{0.5em}
+    \begin{itemize}
+        \item \textbf{A, C, D, E} have known planted cliques (ground-truth $\omega$ is exact)
+        \item \textbf{B} has no planted clique --- brute-force Bron-Kerbosch finds $\omega$ for $n \leq 90$
+        \item Defaults: \texttt{--strategies B,D} (hardest for classical continuous solvers in prior sweeps)
+    \end{itemize}
+\end{frame}
+
+% ── Prior Sweep Results ──────────────────────────────────────────────────
+
+\begin{frame}{Prior Sweep: Classical Solver Hit-Rates ($n{=}90$, 30 restarts)}
+    \begin{table}
+    \footnotesize
+    \begin{tabular}{l r r r r r}
+        \toprule
+        \textbf{Strategy} & \textbf{Count} & \textbf{Avg $\omega$} & \textbf{SLSQP hit} & \textbf{PGD hit} & \textbf{L-BFGS hit} \\
+        \midrule
+        A near-threshold  & 9  & 16.7 & 73\% & 70\% & 0\% \\
+        \alert{B dense random}    & 6  & 24.3 & \alert{5\%}  & \alert{13\%} & 0\% \\
+        C degenerate      & 9  & 10.3 & 6\%  & 9\%  & 0\% \\
+        \alert{D camouflage}      & 12 & 14.0 & \alert{1\%}  & \alert{2\%}  & 0\% \\
+        E overlap         & 9  & 12.4 & 84\% & 87\% & 0\% \\
+        \bottomrule
+    \end{tabular}
+    \end{table}
+
+    \vspace{0.5em}
+    \textbf{Key observations:}
+    \begin{itemize}
+        \item \textbf{B} and \textbf{D} are the hardest --- \textbf{targets for Boson14 stress testing}
+        \item L-BFGS (softmax parameterisation) fails across the board
+        \item \textbf{E} is easy for omega recovery but produces spurious supports (Bomze-style issue)
+    \end{itemize}
+\end{frame}
+
+% ── Permutation Variants Recap ───────────────────────────────────────────
+
+\begin{frame}{Permutation Variants: Front / End / Random}
+    For each instance we emit three isomorphic copies of the graph, differing only in how vertex labels map to matrix indices:
+
+    \begin{itemize}
+        \item \textbf{front:} reference clique at indices $[1, 2, \ldots, k]$
+        \item \textbf{end:} reference clique at indices $[n-k+1, \ldots, n]$
+        \item \textbf{random:} reference clique at $k$ random indices
+    \end{itemize}
+
+    \vspace{0.5em}
+    \textbf{What this tests:} the hardware should recover the same $\omega$ regardless of where in the adjacency matrix the clique sits. Any amplitude-dependent or position-dependent bias becomes visible.
+
+    \vspace{0.5em}
+    \alert{Strategy B special case:} for $n \leq 90$ we brute-force a max clique first and treat it as the ``reference'' for front/end targeting. For $n > 90$ we emit only random variants (brute-force becomes intractable).
+\end{frame}
+
+% ── Pipeline Overview ────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Pipeline: Four Phases, Stoppable}
+    Each phase writes a \texttt{phase\_\{name\}.done} marker for idempotent resume.
+
+    \begin{table}
+    \footnotesize
+    \begin{tabular}{l l l}
+        \toprule
+        \textbf{Phase} & \textbf{What it does} & \textbf{Hardware?} \\
+        \midrule
+        \texttt{generate} & Build G(n,p) + hard-instance modification & No \\
+        \texttt{variants} & Emit 3 permutation variants + CSV + meta  & No \\
+        \texttt{verify}   & Brute-force $\omega$ + theoretical solutions NPZ & No \\
+        \texttt{hardware} & Call \texttt{run\_boson14.py} per variant $\times$ amplitude & \alert{Yes} \\
+        \bottomrule
+    \end{tabular}
+    \end{table}
+
+    \vspace{0.5em}
+\begin{lstlisting}[style=shell,numbers=none]
+# Stop after CSVs are generated (no hardware needed)
+python pipeline.py --strategies D --n 50 --k 12 --seeds 42 \
+    --phase variants --verify
+
+# Full pipeline on hardware
+python pipeline.py --strategies B,D --n 90 --seeds 42 \
+    --amplitudes 300,400,500,600
+
+# Resume after an interruption
+python pipeline.py --strategies B,D --n 90 --seeds 42 --skip-existing
+\end{lstlisting}
+\end{frame}
+
+% ── generate Phase ───────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Phase 1 -- generate}
+\begin{lstlisting}[style=shell,numbers=none]
+python pipeline.py --strategies B --n 20 --seeds 42 --phase generate
+\end{lstlisting}
+
+\begin{lstlisting}[numbers=none,basicstyle=\ttfamily\scriptsize]
+==== Strategy B, seed 42 ====
+  [dense_random_n20_p0.9_s42] brute-force omega = 11
+      (reference clique: [1,2,3,6,7,9,10,11,12,14,15])
+  [dense_random_n20_p0.9_s42] generate: saved to .../hard_dense_random_n20_p0.9_s42
+\end{lstlisting}
+
+    \textbf{Produces:}
+    \begin{itemize}
+        \item \texttt{base\_meta.json} --- strategy, $n$, $p$, seed, reference clique, $g^\star$
+        \item \texttt{base\_adjacency.npz} --- raw $A$ matrix
+        \item \texttt{phase\_generate.done}
+    \end{itemize}
+
+    For strategy B, the brute-force max-clique search runs automatically inside this phase so later phases have a reference clique for permutation.
+\end{frame}
+
+% ── variants Phase ───────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Phase 2 -- variants}
+\begin{lstlisting}[style=shell,numbers=none]
+python pipeline.py --strategies B --n 20 --seeds 42 \
+    --phase variants --skip-existing
+\end{lstlisting}
+
+\begin{lstlisting}[numbers=none,basicstyle=\ttfamily\scriptsize]
+[hard_dense_random_n20_p0.9_s42] variants...
+    [front]  sanity check PASSED, targets=[1..11]
+    [end]    sanity check PASSED, targets=[10..20]
+    [random] sanity check PASSED, targets=[1,4,5,6,8,9,12,14,16,18,20]
+\end{lstlisting}
+
+    \textbf{Produces (per variant):}
+    \begin{itemize}
+        \item \texttt{\{variant\}\_boson14.csv} --- input for \texttt{run\_boson14.py} (format: $[C_0\mid A]$)
+        \item \texttt{\{variant\}\_boson14.json} --- polynomial form (for Dirac-3 compatibility)
+        \item \texttt{\{variant\}\_meta.json} --- forward/inverse permutation maps
+    \end{itemize}
+
+    \textbf{Sanity check} (hard failure on mismatch): the submatrix at the target positions must be a complete subgraph (all-ones minus diagonal).
+\end{frame}
+
+% ── verify Phase ─────────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Phase 3 -- verify (optional)}
+\begin{lstlisting}[style=shell,numbers=none]
+python pipeline.py --strategies D --n 50 --k 12 --seeds 42 \
+    --phase verify --verify --skip-existing
+\end{lstlisting}
+
+    \textbf{For each variant:}
+    \begin{itemize}
+        \item Rebuild the graph from the CSV
+        \item Enumerate all max cliques via \texttt{networkx.find\_cliques} (Bron-Kerbosch, lazy)
+        \item Save theoretical optimal $y$ vectors to \texttt{\{variant\}\_solutions.npz} (one row per max clique)
+        \item Update \texttt{\{variant\}\_meta.json} with \texttt{omega\_verified} and \texttt{num\_max\_cliques}
+    \end{itemize}
+
+    \vspace{0.5em}
+    \textbf{Cost:} Exponential in $n$ (Bron-Kerbosch). Practical for $n \leq 90$; scales up to a 120\,s timeout beyond which counts become approximate.
+\end{frame}
+
+% ── hardware Phase ───────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Phase 4 -- hardware}
+\begin{lstlisting}[style=shell,numbers=none]
+python pipeline.py --strategies D --n 50 --k 12 --seeds 42 \
+    --amplitudes 300,400,500,600 \
+    -R 100 -s 1000 -l 256 -d 86 -w 1 -b 28 -solps 0
+\end{lstlisting}
+
+    \textbf{For each variant $\times$ amplitude:}
+    \begin{enumerate}
+        \item \texttt{subprocess.run([python, run\_boson14.py, csv, ...flags], cwd=variant\_dir)}
+        \item Measure wall-clock time from start of subprocess to completion
+        \item Post-process NPZ: inject \texttt{amplitude}, \texttt{device\_time\_wrapper\_s}, and all hardware flags
+        \item Rename \texttt{results\_\_*.npz} / \texttt{plot\_\_*.png} to add \texttt{\_a\{amp\}} suffix
+        \item Append an entry to instance-level \texttt{timing\_summary.json}
+    \end{enumerate}
+
+    \vspace{0.5em}
+    \alert{Critical:} \texttt{run\_boson14.py} is called \textbf{unchanged} as a subprocess; we only wire up I/O around it.
+\end{frame}
+
+% ── Hardware Config Pass-Through ─────────────────────────────────────────
+
+\begin{frame}[fragile]{Hardware Flags (Pass-Through to \texttt{run\_boson14.py})}
+    \begin{table}
+    \footnotesize
+    \begin{tabular}{l l l}
+        \toprule
+        \textbf{Flag} & \textbf{Default} & \textbf{Description} \\
+        \midrule
+        \texttt{--amplitudes} & \texttt{300,400,500,600} & One hardware run per variant per amplitude \\
+        \texttt{-R} / \texttt{--r} & 100  & Sum constraint \\
+        \texttt{-s} / \texttt{--num-samples} & 200 & Hardware samples \\
+        \texttt{-l} / \texttt{--num-loops} & 200 & Computation loops \\
+        \texttt{-d} / \texttt{--delay} & 86 & Response delay \\
+        \texttt{-w} / \texttt{--pulse-width} & 1 & --- \\
+        \texttt{-b} / \texttt{--distance-between-pulses} & 28 & --- \\
+        \texttt{-solps} & 0 & Matplotlib block flag (0 in pipeline mode) \\
+        \bottomrule
+    \end{tabular}
+    \end{table}
+
+    \vspace{0.5em}
+    Each \texttt{results\_\_*.npz} gets \textbf{all} flag values written into it, so later analysis can read the hardware config from the NPZ alone (no filename parsing).
+\end{frame}
+
+% ── Device-Time Tracking ─────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Device-Time Tracking}
+    Measured: wall-clock time from subprocess start to subprocess exit (\texttt{device\_time\_wrapper\_s}). Includes subprocess spawn $+$ hardware compute $+$ result I/O.
+
+    \vspace{0.5em}
+    \textbf{Per-NPZ:} one field in each \texttt{results\_\_*.npz}
+    \textbf{Per-instance:} \texttt{timing\_summary.json} at the instance root
+
+\begin{lstlisting}[style=json,numbers=none]
+{
+  "entries": [
+    {"variant": "front", "amplitude": 300, "device_time_wrapper_s": 57.2,
+     "timestamp": "2026-04-23T10:21:42Z",
+     "result_filename": "results__front_boson14__20260423_102143_a300.npz",
+     "hardware_flags": {"R": 100, "num_samples": 1000, "num_loops": 256, ...}},
+    {"variant": "front", "amplitude": 600, "device_time_wrapper_s": 58.1, ...}
+  ],
+  "totals": {"num_runs": 12, "total_device_time_s": 695.8}
+}
+\end{lstlisting}
+
+    \vspace{0.5em}
+    Upserts are keyed on (variant, amplitude) --- resumed pipelines don't duplicate entries.
+\end{frame}
+
+% ── Output Layout ────────────────────────────────────────────────────────
+
+\begin{frame}[fragile]{Output Layout (One Instance)}
+\begin{lstlisting}[style=shell,numbers=none]
+output/hard_D_camouflage_n90_k12_rf0.4_p0.5_s42/
+  base_meta.json               # strategy, n, k, p, seed, reference_nodes, g_star
+  base_adjacency.npz           # raw A matrix
+  timing_summary.json          # per-variant per-amplitude runtimes
+  phase_generate.done          # idempotency markers
+  phase_variants.done
+  phase_verify.done
+  phase_hardware.done
+  front/
+    front_meta.json            # variant metadata + perm maps
+    front_boson14.csv          # [C_zeros | A_variant] - input for run_boson14.py
+    front_boson14.json         # polynomial form
+    front_solutions.npz        # theoretical optimal y (from --verify)
+    results__front_boson14__20260423_102143_a300.npz
+    plot__front_boson14__20260423_102143_a300.png
+    results__front_boson14__20260423_102143_a600.npz
+    plot__front_boson14__20260423_102143_a600.png
+  end/ ...
+  random/ ...
+\end{lstlisting}
+
+    Naming convention matches \texttt{boson14/output/benchmark\_*/} exactly, so existing analysis scripts (\texttt{boson14/scripts/extract\_results.py}) can ingest these with a minimal glob change.
+\end{frame}
+
+% ── CLI Quick Reference ──────────────────────────────────────────────────
+
+\begin{frame}[fragile]{CLI Quick Reference}
+\begin{lstlisting}[style=shell,numbers=none]
+# Strategy B and D defaults, single seed, four amplitudes
+python pipeline.py --n 90 --seeds 42 --amplitudes 300,400,500,600
+
+# All five strategies, three seeds, custom k
+python pipeline.py --strategies A,B,C,D,E --n 60 --k 15 \
+    --seeds 42,123,7 --amplitudes 600
+
+# Offline only (no hardware): generate CSVs for later use
+python pipeline.py --strategies D --n 50 --k 12 --seeds 42 \
+    --phase variants --verify
+
+# Resume the hardware phase after a crash
+python pipeline.py --strategies B,D --n 90 --seeds 42 \
+    --amplitudes 300,400,500,600 --skip-existing
+
+# Dry-run: print commands without calling hardware
+python pipeline.py --strategies D --n 20 --k 6 --seeds 42 \
+    --amplitudes 300 --dry-run
+\end{lstlisting}
+\end{frame}
+
+% ── Self-Containment ─────────────────────────────────────────────────────
+
+\begin{frame}{Self-Containment}
+    \textbf{Directory:} \texttt{boson14/hard-instances-benchmarks/}
+
+    \begin{itemize}
+        \item \texttt{pipeline.py} --- main CLI, four phases
+        \item \texttt{utils.py} --- variant generation + I/O helpers
+        \item \texttt{\_internal/generators.py} --- strategy definitions (copied from \texttt{hard-instances/})
+        \item \texttt{\_internal/bruteforce.py} --- exact max-clique via Bron-Kerbosch
+        \item \texttt{README.md} --- full usage docs
+        \item \texttt{manual.tex} --- this document
+    \end{itemize}
+
+    \vspace{0.5em}
+    \textbf{External dependencies:}
+    \begin{itemize}
+        \item \texttt{boson14\_bench} (parent package) for permutation + polynomial helpers
+        \item \texttt{run\_boson14.py} (parent directory) --- invoked as subprocess, never modified
+    \end{itemize}
+
+    \vspace{0.5em}
+    The subfolder can be moved anywhere on the filesystem as long as a compatible \texttt{boson14\_bench} package is on \texttt{sys.path} and \texttt{run\_boson14.py} is at \texttt{../run\_boson14.py}.
+\end{frame}
+
+% ── Design Principles ────────────────────────────────────────────────────
+
+\begin{frame}{Design Principles}
+    \begin{itemize}
+        \item \textbf{Don't touch \texttt{run\_boson14.py}} --- wrap its CWD-relative I/O via \texttt{cwd=variant\_dir} and post-process the NPZ
+        \item \textbf{Phase-based} --- each phase is independently re-runnable; markers make resume cheap
+        \item \textbf{Sanity-check permutations} --- the all-ones-minus-diagonal submatrix test catches 0-based/1-based bugs at the source
+        \item \textbf{Single authoritative timing record} --- \texttt{timing\_summary.json} is upserted, never appended blindly
+        \item \textbf{Brute-force gated by $n$} --- $n \leq 90$ gets full verification; $n > 90$ gracefully degrades to random-only variants for strategy B
+        \item \textbf{Complete hardware provenance} --- every result NPZ carries its own full hardware flag set; no external context needed to interpret a lone file
+    \end{itemize}
+\end{frame}
+
+% ── Future Work ──────────────────────────────────────────────────────────
+
+\begin{frame}{Future Work}
+    \begin{itemize}
+        \item \textbf{Report scripts:} extend \texttt{boson14/scripts/extract\_results.py} to pick up \texttt{hard\_*} folders (pattern: \texttt{benchmark\_*|hard\_*})
+        \item \textbf{Comparative analysis:} overlay Boson14 amplitude sweeps on the same axes as the prior classical-solver hit-rate distributions
+        \item \textbf{Strategy parameter grids:} automate the parameter sweep for D (vary \texttt{removal\_frac} $\in \{0.3, 0.4, 0.5\}$) and A (vary \texttt{k\_multiplier})
+        \item \textbf{Failure-mode analysis:} cluster samples whose support is \emph{not} a clique (Bomze repair overlap with existing \texttt{boson14\_repair.py})
+        \item \textbf{Bomze regularisation:} add \texttt{--bomze} flag that writes $J = -0.5(A + 0.5I)$ instead of $-0.5A$ to eliminate spurious local optima
+    \end{itemize}
+\end{frame}
+
+% ── References ───────────────────────────────────────────────────────────
+
+\begin{frame}{References}
+    \footnotesize
+    \begin{itemize}
+        \item Motzkin, Straus (1965). ``Maxima for graphs and a new proof of a theorem of Turán.'' \emph{Canadian J.\ Math.\ 17}, 533--540.
+        \item Bomze (1997). ``Evolution towards the maximum clique.'' \emph{J.\ Global Opt.\ 10}, 143--164.
+        \item Gibbons, Hearn, Pardalos, Ramana (1997). ``Continuous characterizations of the maximum clique problem.'' \emph{Math.\ Oper.\ Res.\ 22(3)}, 754--768.
+        \item Brockington, Culberson (1993). DIMACS 2nd Implementation Challenge instance generators.
+        \item Gamarnik, Zadik (2019). ``The Landscape of the Planted Clique Problem: Dense subgraphs and the Overlap Gap Property.'' \href{https://arxiv.org/abs/1904.07174}{arXiv:1904.07174}.
+        \item Walteros, Buchanan (2020). ``Why Is Maximum Clique Often Easy in Practice?'' \emph{Operations Research}.
+        \item Chen, Moitra, Rohatgi (2024). ``Finding Planted Cliques Using Gradient Descent.'' \emph{SIMODS}.
+    \end{itemize}
+\end{frame}
+
+\end{document}

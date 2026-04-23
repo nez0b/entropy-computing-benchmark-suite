@@ -4,6 +4,8 @@ __pycache__/
 .env
 output/
 .DS_Store
+
+# LaTeX build artifacts
 *.aux
 *.log
 *.nav
@@ -11,3 +13,17 @@ output/
 *.snm
 *.toc
 *.vrb
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Regeneratable analysis caches (rebuild via scripts/extract_results.py etc.)
+scripts/cache/
+
+# Python packaging / editor
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+.idea/
+.vscode/
+*.swp

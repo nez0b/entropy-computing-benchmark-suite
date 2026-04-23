@@ -8,6 +8,7 @@ dependencies = [
     "scipy",
     "networkx",
     "matplotlib",
+    "pandas",
     "python-dotenv",
     "eqc-models",
     "qci-client>=4.5",
