@@ -687,3 +687,376 @@ def plot_hardware_distribution(
     fig.savefig(fname, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fname
+
+
+# ---------------------------------------------------------------------------
+# Alternative solvers (verify-phase optional): classical + Dirac-3 cloud
+# ---------------------------------------------------------------------------
+
+# Consistent color palette so repeated runs use identical colors.
+_SOLVER_COLOURS = {
+    "Greedy":  "#4C72B0",  # blue
+    "PGD":     "#DD8452",  # orange
+    "SLSQP":   "#55A868",  # green
+    "Dirac-3": "#8172B2",  # purple
+    "BF":      "#CCB974",  # tan (brute-force)
+}
+
+
+def run_classical_solvers(
+    A: np.ndarray,
+    R: int,
+    true_omega: int | None,
+    num_restarts: int = 30,
+    seed: int = 42,
+) -> dict[str, dict]:
+    """Run Greedy, PGD, SLSQP on the unit simplex, scale solutions by R.
+
+    Returns a dict keyed by solver name. Each value has the same schema as
+    `_internal.classical_solvers.solve_*` plus `all_y_scaled` (solutions × R)
+    for direct comparison with Boson14 hardware samples.
+    """
+    from _internal.classical_solvers import (
+        solve_greedy_degree, solve_pgd, solve_slsqp,
+    )
+
+    out: dict[str, dict] = {}
+    for name, fn in [("Greedy", solve_greedy_degree),
+                     ("PGD",    solve_pgd),
+                     ("SLSQP",  solve_slsqp)]:
+        print(f"    [{name}] running ({num_restarts} restarts)...")
+        res = fn(A, num_restarts=num_restarts, seed=seed, true_omega=true_omega)
+        # Scale to Boson14's y-space (sum=R) so threshold analysis matches
+        res["all_y_scaled"] = res["all_solutions"] * R
+        res["best_y_scaled"] = res["best_solution"] * R
+        out[name] = res
+        print(f"    [{name}] best ω={res['best_omega']}, "
+              f"hit={res['hit_rate']:.0%}, time={res['solve_time']:.1f}s")
+    return out
+
+
+def run_dirac_solver(
+    A: np.ndarray,
+    R: int,
+    num_samples: int = 100,
+    relaxation_schedule: int = 2,
+    env_path: Path | None = None,
+) -> dict:
+    """Submit to Dirac-3 cloud; return dict compatible with hardware-analysis pipeline."""
+    from _internal.dirac_cloud import solve_dirac_cloud
+    return solve_dirac_cloud(
+        A, R=R,
+        num_samples=num_samples,
+        relaxation_schedule=relaxation_schedule,
+        env_path=env_path,
+    )
+
+
+def save_alternative_results(
+    variant_dir: Path,
+    classical_results: dict[str, dict] | None,
+    dirac_result: dict | None,
+    R: int,
+    true_omega: int | None,
+) -> None:
+    """Persist raw arrays + summary metadata for the alternative solvers.
+
+    Files written (each optional — only if the respective result was provided):
+      - {variant}_classical_solutions.npz
+          greedy_y / pgd_y / slsqp_y  (each shape (num_restarts, n), sum=R)
+          greedy_g / pgd_g / slsqp_g  (per-restart objectives, unit simplex scale)
+      - {variant}_classical_meta.json (aggregated stats for plotting/analysis)
+      - {variant}_dirac_solutions.npz  (y_vectors shape (num_samples, n))
+      - {variant}_dirac_meta.json
+    """
+    variant_name = variant_dir.name
+
+    if classical_results:
+        # NPZ
+        npz_kwargs = {}
+        for name, res in classical_results.items():
+            key = name.lower().replace("-", "_")
+            npz_kwargs[f"{key}_y"] = res["all_y_scaled"]
+            npz_kwargs[f"{key}_g"] = np.array(res["all_objectives"])
+        np.savez(variant_dir / f"{variant_name}_classical_solutions.npz", **npz_kwargs)
+
+        # JSON summary
+        meta = {
+            "variant": variant_name,
+            "R": R,
+            "true_omega": true_omega,
+            "solvers": {
+                name: {
+                    "best_omega": res["best_omega"],
+                    "best_objective_unit": res["best_objective"],
+                    "best_objective_scaled": res["best_objective"] * (R * R),
+                    "hit_rate": round(res["hit_rate"], 4),
+                    "num_restarts": res["num_restarts"],
+                    "solve_time_s": round(res["solve_time"], 3),
+                }
+                for name, res in classical_results.items()
+            },
+        }
+        (variant_dir / f"{variant_name}_classical_meta.json").write_text(
+            json.dumps(meta, indent=2) + "\n"
+        )
+
+    if dirac_result:
+        np.savez(
+            variant_dir / f"{variant_name}_dirac_solutions.npz",
+            y_vectors=dirac_result["all_solutions"],
+            objectives=np.array(dirac_result["all_objectives"]),
+        )
+        meta = {
+            "variant": variant_name,
+            "R": R,
+            "true_omega": true_omega,
+            "best_omega": dirac_result["best_omega"],
+            "best_objective_scaled": dirac_result["best_objective"],
+            "num_samples": dirac_result["num_samples"],
+            "num_finite": dirac_result["num_finite"],
+            "relaxation_schedule": dirac_result["relaxation_schedule"],
+            "solve_time_s": round(dirac_result["solve_time"], 3),
+            "formulation": "J = -0.5*A (standard Dirac-3)",
+        }
+        (variant_dir / f"{variant_name}_dirac_meta.json").write_text(
+            json.dumps(meta, indent=2) + "\n"
+        )
+
+
+def _clique_size_hist(y_array: np.ndarray, A: np.ndarray, R: int, k_ref: int) -> dict[int, int]:
+    """For each row of y_array, extract threshold support and count valid-clique sizes.
+
+    Uses the same `_threshold_support` and `_is_clique` helpers as
+    `analyze_hardware_samples` so classical/Dirac output is analysed the same
+    way as Boson14 hardware samples.
+    """
+    counts: dict[int, int] = {}
+    for y in y_array:
+        supp = _threshold_support(y, R, k_ref)
+        if len(supp) >= 2 and _is_clique(supp, A):
+            counts[len(supp)] = counts.get(len(supp), 0) + 1
+    return counts
+
+
+def plot_alternative_comparison(
+    classical_results: dict[str, dict] | None,
+    dirac_result: dict | None,
+    A: np.ndarray,
+    bruteforce_dist: dict,
+    R: int,
+    k_ref: int,
+    known_omega: int | None,
+    graph_name: str,
+    variant_name: str,
+    save_path: Path,
+) -> list[Path]:
+    """Two figures (if both groups are provided):
+        classical_dist_{variant}.png  — Greedy + PGD + SLSQP stacked with BF
+        dirac_dist_{variant}.png      — Dirac-3 stacked with BF
+
+    Top panel:    valid-clique-size histograms (per solver + BF).
+    Bottom panel: scaled objective distribution (per solver + BF), with
+                  vertical g*(ω) reference lines.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    save_path.mkdir(parents=True, exist_ok=True)
+    saved: list[Path] = []
+
+    bf_sizes = bruteforce_dist.get("size_counts", {})
+    # compute_clique_distribution already returns objectives in SCALED space
+    # (g*(ω, R) = (R²/2)(1 - 1/ω)), so no further multiplication needed.
+    bf_obj_scaled = np.array(bruteforce_dist.get("objectives", []), dtype=float)
+
+    # ---- Figure 1: classical solvers ---------------------------------------
+    if classical_results:
+        fname = save_path / f"classical_dist_{variant_name}.png"
+        fig, (ax_size, ax_obj) = plt.subplots(2, 1, figsize=(10, 10))
+
+        solver_size_counts = {
+            name: _clique_size_hist(res["all_y_scaled"], A, R, k_ref)
+            for name, res in classical_results.items()
+        }
+        all_sizes = sorted(
+            (set.union(*(set(d) for d in solver_size_counts.values())) | set(bf_sizes)) - {0}
+        )
+        if not all_sizes:
+            all_sizes = [known_omega or 1]
+
+        solver_names = list(classical_results.keys())
+        x = np.arange(len(all_sizes))
+
+        # Grouped bars on LEFT y-axis (solver counts) + TWIN y-axis on RIGHT (BF counts).
+        # BF has orders of magnitude more cliques than a few dozen solver restarts,
+        # so a single axis hides the solver data.
+        solver_width = 0.8 / (len(solver_names) + 1)
+        for i, name in enumerate(solver_names):
+            counts = [solver_size_counts[name].get(s, 0) for s in all_sizes]
+            offset = (i - len(solver_names) / 2) * solver_width
+            ax_size.bar(
+                x + offset, counts, solver_width,
+                color=_SOLVER_COLOURS.get(name, None), edgecolor="black", alpha=0.85,
+                label=f"{name} (valid, {sum(counts)})",
+            )
+        ax_size.set_xticks(x)
+        ax_size.set_xticklabels([str(s) for s in all_sizes])
+        ax_size.set_xlabel("Clique size")
+        ax_size.set_ylabel("Solver valid-clique count (left)")
+        ax_size.legend(loc="upper left", fontsize=8)
+        ax_size.grid(True, alpha=0.3, axis="y")
+
+        ax_size_bf = ax_size.twinx()
+        bf_counts = [bf_sizes.get(s, 0) for s in all_sizes]
+        ax_size_bf.bar(
+            x + (len(solver_names) / 2) * solver_width, bf_counts, solver_width,
+            color=_SOLVER_COLOURS["BF"], edgecolor="black", alpha=0.5,
+            label=f"Brute-force maximal ({sum(bf_counts)})",
+        )
+        ax_size_bf.set_ylabel("Brute-force count (right)", color=_SOLVER_COLOURS["BF"])
+        ax_size_bf.tick_params(axis="y", labelcolor=_SOLVER_COLOURS["BF"])
+        ax_size_bf.legend(loc="upper right", fontsize=8)
+
+        title = f"{graph_name} / {variant_name}: Classical Solvers Clique-Size Distribution"
+        subtitle = " | ".join(
+            f"{n}: best ω={r['best_omega']}, hit={r['hit_rate']:.0%}"
+            for n, r in classical_results.items()
+        )
+        if known_omega is not None:
+            subtitle += f"  |  Known ω = {known_omega}"
+        ax_size.set_title(f"{title}\n{subtitle}")
+
+        # Bottom: objective distributions. No BF bars — vertical reference lines
+        # already mark exactly where the maximal cliques sit, without drowning
+        # out the much smaller solver sample.
+        all_scaled_g: list[float] = []
+        for res in classical_results.values():
+            scaled = np.array(res["all_objectives"]) * (R * R)  # unit → scaled
+            all_scaled_g.extend(scaled.tolist())
+        if not all_scaled_g:
+            all_scaled_g = [0.0, 1.0]
+        g_min, g_max = float(np.min(all_scaled_g)), float(np.max(all_scaled_g))
+        if bf_obj_scaled.size:
+            g_min = min(g_min, float(np.min(bf_obj_scaled)))
+            g_max = max(g_max, float(np.max(bf_obj_scaled)))
+        if g_max <= g_min:
+            g_max = g_min + 1.0
+        bins = np.linspace(g_min, g_max, 40)
+
+        for name, res in classical_results.items():
+            scaled = np.array(res["all_objectives"]) * (R * R)
+            ax_obj.hist(
+                scaled, bins=bins, color=_SOLVER_COLOURS.get(name, None),
+                alpha=0.55, edgecolor="black",
+                label=f"{name} g ({len(scaled)} restarts)",
+            )
+
+        _draw_omega_reference_lines(ax_obj, all_sizes, R, known_omega)
+        ax_obj.set_xlabel(r"Scaled objective $g = \frac{1}{2} y^\top A\, y$")
+        ax_obj.set_ylabel("Frequency")
+        ax_obj.set_title(
+            f"{graph_name} / {variant_name}: Classical Objective Distribution (R={R})"
+            f"   (ω lines = brute-force maximal-clique locations)"
+        )
+        ax_obj.legend(loc="upper left", fontsize=8)
+        ax_obj.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        fig.savefig(fname, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(fname)
+
+    # ---- Figure 2: Dirac-3 -------------------------------------------------
+    if dirac_result:
+        fname = save_path / f"dirac_dist_{variant_name}.png"
+        fig, (ax_size, ax_obj) = plt.subplots(2, 1, figsize=(10, 10))
+
+        dirac_sizes = _clique_size_hist(dirac_result["all_solutions"], A, R, k_ref)
+        dirac_g = np.array(dirac_result["all_objectives"], dtype=float)  # already scaled
+
+        all_sizes = sorted(set(dirac_sizes) | set(bf_sizes)) or [known_omega or 1]
+        x = np.arange(len(all_sizes))
+        width = 0.35
+
+        # Left axis: Dirac counts (typically 1-100). Right axis: BF counts (thousands).
+        dirac_counts = [dirac_sizes.get(s, 0) for s in all_sizes]
+        bf_counts = [bf_sizes.get(s, 0) for s in all_sizes]
+        ax_size.bar(x - width / 2, dirac_counts, width,
+                    color=_SOLVER_COLOURS["Dirac-3"], edgecolor="black", alpha=0.85,
+                    label=f"Dirac-3 (valid, {sum(dirac_counts)})")
+        ax_size.set_xticks(x)
+        ax_size.set_xticklabels([str(s) for s in all_sizes])
+        ax_size.set_xlabel("Clique size")
+        ax_size.set_ylabel("Dirac-3 valid-clique count (left)")
+        ax_size.legend(loc="upper left", fontsize=8)
+        ax_size.grid(True, alpha=0.3, axis="y")
+
+        ax_size_bf = ax_size.twinx()
+        ax_size_bf.bar(x + width / 2, bf_counts, width,
+                       color=_SOLVER_COLOURS["BF"], edgecolor="black", alpha=0.5,
+                       label=f"Brute-force maximal ({sum(bf_counts)})")
+        ax_size_bf.set_ylabel("Brute-force count (right)", color=_SOLVER_COLOURS["BF"])
+        ax_size_bf.tick_params(axis="y", labelcolor=_SOLVER_COLOURS["BF"])
+        ax_size_bf.legend(loc="upper right", fontsize=8)
+
+        frac = sum(dirac_counts) / max(1, dirac_result["num_finite"])
+        title = f"{graph_name} / {variant_name}: Dirac-3 Clique-Size Distribution"
+        subtitle = (f"Valid-clique fraction: {frac:.1%} "
+                    f"({sum(dirac_counts)}/{dirac_result['num_finite']}) | "
+                    f"best ω={dirac_result['best_omega']}")
+        if known_omega is not None:
+            subtitle += f"  |  Known ω = {known_omega}"
+        ax_size.set_title(f"{title}\n{subtitle}")
+
+        # Bottom: Dirac objective distribution + g*(ω) reference lines (same style
+        # as classical panel — no BF bars, rely on the vertical lines to mark the
+        # brute-force maximal-clique locations).
+        if dirac_g.size:
+            g_min, g_max = float(np.min(dirac_g)), float(np.max(dirac_g))
+            if bf_obj_scaled.size:
+                g_min = min(g_min, float(np.min(bf_obj_scaled)))
+                g_max = max(g_max, float(np.max(bf_obj_scaled)))
+            if g_max <= g_min:
+                g_max = g_min + 1.0
+            bins = np.linspace(g_min, g_max, 40)
+            ax_obj.hist(dirac_g, bins=bins, color=_SOLVER_COLOURS["Dirac-3"],
+                        alpha=0.55, edgecolor="black",
+                        label=f"Dirac-3 g(y) ({len(dirac_g)})")
+
+        _draw_omega_reference_lines(ax_obj, all_sizes, R, known_omega)
+        ax_obj.set_xlabel(r"Scaled objective $g = \frac{1}{2} y^\top A\, y$")
+        ax_obj.set_ylabel("Frequency")
+        ax_obj.set_title(
+            f"{graph_name} / {variant_name}: Dirac-3 Objective Distribution (R={R})"
+            f"   (ω lines = brute-force maximal-clique locations)"
+        )
+        ax_obj.legend(loc="upper left", fontsize=8)
+        ax_obj.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        fig.savefig(fname, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(fname)
+
+    return saved
+
+
+def _draw_omega_reference_lines(ax, sizes: list[int], R: int, known_omega: int | None) -> None:
+    """Overlay vertical g*(ω) reference lines on an objective-distribution axis."""
+    y_max = ax.get_ylim()[1] or 1.0
+    for s in sizes:
+        if s < 2:
+            continue
+        g_w = (R * R / 2.0) * (1.0 - 1.0 / s)
+        if s == known_omega:
+            color, style = "#2ca02c", "-"
+        elif sizes and s == max(sizes):
+            color, style = "#d62728", "-"
+        else:
+            color, style = "#7f7f7f", "--"
+        ax.axvline(x=g_w, color=color, linestyle=style, alpha=0.8, linewidth=1.5)
+        ax.text(g_w, y_max * 0.92, f" ω={s}",
+                rotation=90, va="bottom", color=color,
+                fontsize=9, fontweight="bold")
