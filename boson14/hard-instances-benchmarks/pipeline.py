@@ -110,6 +110,20 @@ def parse_args() -> argparse.Namespace:
                    help="Skip the verify-phase clique-distribution plot (on by default)")
     p.add_argument("--no-hardware-plot", action="store_true",
                    help="Skip the hardware-phase sample-distribution plot (on by default)")
+
+    # Alternative solvers (verify phase, opt-in). Run only on the random variant
+    # because all 3 variants are isomorphic copies — so one is enough for
+    # solver comparison (unlike hardware which is position-dependent).
+    p.add_argument("--classical-solve", action="store_true",
+                   help="Run classical solvers (Greedy, PGD, SLSQP) on the random variant")
+    p.add_argument("--dirac-solve", action="store_true",
+                   help="Run Dirac-3 cloud solver on the random variant")
+    p.add_argument("--classical-restarts", type=int, default=30,
+                   help="Restarts for Greedy/PGD/SLSQP (default: 30)")
+    p.add_argument("--dirac-samples", type=int, default=100,
+                   help="Dirac-3 samples (default: 100)")
+    p.add_argument("--dirac-schedule", type=int, default=2, choices=[1, 2, 3, 4],
+                   help="Dirac-3 relaxation schedule (default: 2)")
     p.add_argument("--output-dir", type=Path, default=SCRIPT_DIR / "output",
                    help="Output root directory")
     p.add_argument("--dry-run", action="store_true",
@@ -384,6 +398,80 @@ def cmd_verify(instance_dir: Path, args: argparse.Namespace) -> None:
         )
         print(f"    [verify-plot] sizes={dict(sorted(dist['size_counts'].items()))}, "
               f"saved clique_dist_{base_meta['instance_name']}.png")
+
+    # Optional: run alternative solvers (classical + Dirac-3 cloud) on the
+    # random variant only. All 3 variants are isomorphic copies of the same
+    # graph, so for solver comparison one variant is enough — unlike the
+    # hardware phase which is position-dependent.
+    if args.classical_solve or args.dirac_solve:
+        random_dir = instance_dir / "random"
+        random_csv = random_dir / "random_boson14.csv"
+        if not random_csv.exists():
+            print("    [alt-solvers] no random/random_boson14.csv — skipping")
+        else:
+            print(f"    [alt-solvers] running on random variant (isomorphic to all variants)")
+            A_rand = np.loadtxt(random_csv, delimiter=",")[:, 1:]
+            true_omega = known_omega  # from bruteforce above, or reference_omega
+
+            classical_results = None
+            dirac_result = None
+
+            if args.classical_solve:
+                classical_results = utils.run_classical_solvers(
+                    A_rand, R,
+                    true_omega=true_omega,
+                    num_restarts=args.classical_restarts,
+                    seed=base_meta.get("seed", 42),
+                )
+
+            if args.dirac_solve:
+                try:
+                    dirac_result = utils.run_dirac_solver(
+                        A_rand, R,
+                        num_samples=args.dirac_samples,
+                        relaxation_schedule=args.dirac_schedule,
+                    )
+                    print(f"    [Dirac-3] best ω={dirac_result['best_omega']}, "
+                          f"best g={dirac_result['best_objective']:.2f}, "
+                          f"time={dirac_result['solve_time']:.1f}s")
+                except Exception as e:  # noqa: BLE001
+                    print(f"    [Dirac-3] ERROR: {e}")
+                    dirac_result = None
+
+            utils.save_alternative_results(
+                variant_dir=random_dir,
+                classical_results=classical_results,
+                dirac_result=dirac_result,
+                R=R,
+                true_omega=true_omega,
+            )
+
+            if classical_results or dirac_result:
+                # k_ref for threshold support — use known omega if available, else best_omega
+                k_ref = (
+                    known_omega
+                    or base_meta.get("reference_omega")
+                    or base_meta.get("k")
+                    or max(3, base_meta["n"] // 4)
+                )
+                # Need brute-force distribution on the random variant specifically
+                # (isomorphic to base, but A_rand is what the y-vectors are scored against)
+                G_rand = utils._graph_from_adjacency(A_rand)
+                bf_dist_rand = compute_clique_distribution(G_rand, R)
+                saved = utils.plot_alternative_comparison(
+                    classical_results=classical_results,
+                    dirac_result=dirac_result,
+                    A=A_rand,
+                    bruteforce_dist=bf_dist_rand,
+                    R=R,
+                    k_ref=k_ref,
+                    known_omega=known_omega,
+                    graph_name=base_meta["instance_name"],
+                    variant_name="random",
+                    save_path=random_dir,
+                )
+                for p_saved in saved:
+                    print(f"    [alt-solvers] plot -> {p_saved.name}")
 
     utils.mark_phase_done(instance_dir, "verify")
 
